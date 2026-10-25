@@ -623,11 +623,27 @@ def add_version(n: Writer, version: str, dsd: Path, bugfix: bool, shift: int) ->
     n.build([grouped_objects], "ltd_objects", [objects_file, lcf_file],
             implicit=["tools/build/ltd_objects.py"])
 
+    link_objects = objects
+    link_response = grouped_objects
+    # PearlB2: our new code, src/pearlb2/*_itcm.c, is linked after the game's own ITCM code, so that nothing of the
+    # game moves (include/pearlb2.h, tools/pearlb2/link_itcm.py); before the DS Protect step, whose prelink needs it
+    pearlb2_objects = []
+    for source in sorted(Path("src/pearlb2").glob("*_itcm.c")):
+        obj = build_dir / source.with_suffix(".o")
+        n.build([obj], "mwcc", [source], variables={"defines": defines, "dep": obj.with_suffix(".d"),
+                                                     "flags": " ".join(source_compiler(source).flags)},
+                order_only=["constants_headers"])
+        pearlb2_objects.append(obj)
+    if pearlb2_objects:
+        pearlb2_lcf, pearlb2_response = build_dir / "arm9_pearlb2.lcf", build_dir / "objects_pearlb2.txt"
+        n.build([pearlb2_lcf, pearlb2_response], "pearlb2_itcm", [link_lcf, link_response, *pearlb2_objects],
+                implicit=["tools/pearlb2/link_itcm.py"])
+        link_lcf, link_response = pearlb2_lcf, pearlb2_response
+        link_objects = [*link_objects, *map(str, pearlb2_objects)]
+
     # Keep DS Protect's legacy interworking glue separate from its compiler objects, one derived object per copy of
     # the flashcart test, each step reading the previous step's object list.
     # Objdiff still uses the compiler output; only the final link uses the derived ones.
-    link_objects = objects
-    link_response = grouped_objects
     veneer_implicit = []
     for source, veneer_dir, section, count in (
             ("lib/dsprot/src/dsprot_detect.o", build_dir / "interworking", "OV165", 8),
@@ -729,6 +745,8 @@ def add_version(n: Writer, version: str, dsd: Path, bugfix: bool, shift: int) ->
     rom_ok = stamp_dir / "rom.ok"
     n.build([rom_ok], "sha1", [sha1_file], implicit=[rom], variables={"rom": str(rom)})
     n.build([version], "phony", [modules_ok, rom_ok] if matching else [rom])
+    # PearlB2: the code binaries and the file system its build starts from, without the ROM and its checks
+    n.build([f"{version}_pearlb2"], "phony", [rom_config, files_ok, *archives])
 
     # Context files for decomp.me scratches, made by objdiff
     for obj in compiled:
@@ -888,6 +906,7 @@ def main():
     n.rule("configure", f"$python configure.py {' '.join(configure_args)}", "Reconfiguring", generator="1")
     # Formats the sources and headers in place with clang-format and .clang-format
     n.rule("format", "clang-format -i $in", "Formatting")
+    n.rule("pearlb2_itcm", "$python tools/pearlb2/link_itcm.py $in $out", "Linking PearlB2's ITCM code")
 
     # The constant headers are generated from the committed lists in generated/, so that the C code, the data
     # files and the scripts share one source of truth, and a mod only edits the list. Compiles depend on them
@@ -957,7 +976,7 @@ def main():
     # The data directories too: adding, removing or renaming a file changes its directory's time, so the build lists
     # the data files again
     source_dirs = [d for _, d, *_ in DATA_PACKS] + list(ARCHIVES.values())
-    source_dirs += list(TEXT_ARCHIVES.values()) + ["generated"]
+    source_dirs += list(TEXT_ARCHIVES.values()) + ["generated", "src/pearlb2"]
     data_dirs = sorted({str(p.relative_to(ROOT)) for d in source_dirs for p in [ROOT / d, *(ROOT / d).rglob("*")]
                         if p.is_dir()})
     n.build(["build.ninja"], "configure", ["configure.py"],
@@ -967,6 +986,7 @@ def main():
                                                                "lib/*/include/**/*.h") for p in ROOT.glob(pattern))
     n.build(["format"], "format", sources)
     n.build(["check"], "phony", checks)
+    n.build(["pearlb2"], "phony", [f"{version}_pearlb2" for version in versions])
     n.default(["check", "objdiff.json"])
 
     (ROOT / "build.ninja").write_text(n.out.getvalue())

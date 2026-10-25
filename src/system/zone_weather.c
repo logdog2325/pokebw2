@@ -1,4 +1,5 @@
 #include "system/zone_weather.h"
+#include "pearlb2.h"
 #include "types.h"
 #include "constants/version.h"
 #include "field/calender.h"
@@ -44,7 +45,12 @@ u8 GetWeatherAll(GameSystem *gsys, u32 zoneId) {
     Calendar *calendar = GetCalendar(gameData);
     u32 weather;
 
+#if PEARLB2
+    // Sinnoh's zones take Sinnoh's weather, never the Unova zone's calendar, Entralink, Route 7 or birthday one
+    weather = PearlB2_SeasonWeather(gameData, zoneId);
+#else
     weather = GetDefaultWeatherValue(gameData, zoneId);
+#endif
     if (weather != WEATHER_NONE) {
         return weather;
     }
